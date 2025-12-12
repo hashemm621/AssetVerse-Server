@@ -61,6 +61,7 @@ async function run() {
     const db = client.db("assetVerse_DB");
     const usersCollection = db.collection("users");
 
+    // user create
 app.post("/users", async (req, res) => {
   try {
     const user = req.body;
@@ -104,6 +105,13 @@ app.post("/users", async (req, res) => {
   }
 });
 
+    // user get by role
+    app.get("/users/:email/role", verifyUserToken, async (req, res) => {
+      const email = req.params.email;
+      const query = { email };
+      const user = await usersCollection.findOne(query);
+      res.send({ role: user?.role || 'employee' });
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
