@@ -198,40 +198,38 @@ async function run() {
     });
 
     // All assets for employ
-   app.get("/assigned-assets", verifyUserToken, async (req, res) => {
-  try {
-    const { page = 1, limit = 10, search = "", type = "" } = req.query;
+    app.get("/assigned-assets", verifyUserToken, async (req, res) => {
+      try {
+        const { page = 1, limit = 10, search = "", type = "" } = req.query;
 
-    const pageNumber = parseInt(page);
-    const limitNumber = parseInt(limit);
-    const skip = (pageNumber - 1) * limitNumber;
+        const pageNumber = parseInt(page);
+        const limitNumber = parseInt(limit);
+        const skip = (pageNumber - 1) * limitNumber;
 
-    const query = {};
-    if (search) query.productName = { $regex: search, $options: "i" };
-    if (type) query.productType = type;
+        const query = {};
+        if (search) query.productName = { $regex: search, $options: "i" };
+        if (type) query.productType = type;
 
-    const totalItems = await assetsCollection.countDocuments(query);
+        const totalItems = await assetsCollection.countDocuments(query);
 
-    const items = await assetsCollection
-      .find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limitNumber)
-      .toArray();
+        const items = await assetsCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .skip(skip)
+          .limit(limitNumber)
+          .toArray();
 
-    res.send({
-      items,
-      totalItems,
-      totalPages: Math.ceil(totalItems / limitNumber),
-      currentPage: pageNumber,
+        res.send({
+          items,
+          totalItems,
+          totalPages: Math.ceil(totalItems / limitNumber),
+          currentPage: pageNumber,
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
     });
-  } catch (error) {
-    console.error(error);
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
-
-
 
     // delete assets hr
     app.delete("/assets/:id", verifyUserToken, async (req, res) => {
@@ -422,6 +420,10 @@ async function run() {
           status: "active",
         };
 
+        console.log("===>> ====>>");
+        console.log(affiliationDoc);
+        console.log("===>> ====>>");
+
         await employeeAffiliationsCollection.insertOne(affiliationDoc);
 
         res.send({ message: "Employee affiliated successfully" });
@@ -433,7 +435,7 @@ async function run() {
     // hr myEmployees
     app.get("/affiliations/hr", verifyUserToken, async (req, res) => {
       try {
-        const hrEmail = req.decoded_email; // use the verified email from token
+        const hrEmail = req.decoded_email;
         const employees = await employeeAffiliationsCollection
           .find({ hrEmail, status: "active" })
           .toArray();
@@ -513,11 +515,27 @@ async function run() {
       }
     });
 
+    // get all requests for HR
+    app.get("/requests/hr", verifyUserToken, async (req, res) => {
+      try {
+        const hrEmail = req.decoded_email;
+        const requests = await requestsCollection
+          .find({ hrEmail })
+          .sort({ requestDate: -1 })
+          .toArray();
+        res.send(requests);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
     // approved employ request to hr
     app.patch("/requests/:id", verifyUserToken, async (req, res) => {
       try {
         const { id } = req.params;
-        const { action, hrEmail } = req.body; // action = "approved" | "rejected"
+        const { action } = req.body;
+        const hrEmail = req.decoded_email;
 
         const request = await requestsCollection.findOne({
           _id: new ObjectId(id),
@@ -542,6 +560,7 @@ async function run() {
         );
 
         if (action === "approved") {
+          // 1. Add to assignedAssets
           await assignedAssetsCollection.insertOne({
             assetId: request.assetId,
             assetName: request.assetName,
@@ -554,6 +573,31 @@ async function run() {
             returnDate: null,
             status: "assigned",
           });
+
+          // 2. Deduct from asset quantity
+          await assetsCollection.updateOne(
+            { _id: request.assetId },
+            { $inc: { availableQuantity: -1 } }
+          );
+
+          // 3. Create affiliation if first time
+          const existingAffiliation =
+            await employeeAffiliationsCollection.findOne({
+              hrEmail: request.hrEmail,
+              employeeEmail: request.requesterEmail,
+              status: "active",
+            });
+
+          if (!existingAffiliation) {
+            await employeeAffiliationsCollection.insertOne({
+              hrEmail: request.hrEmail,
+              employeeEmail: request.requesterEmail,
+              employeeName: request.requesterName,
+              companyName: request.companyName,
+              affiliationDate: new Date(),
+              status: "active",
+            });
+          }
         }
 
         res.send({ message: `Request ${action}` });
