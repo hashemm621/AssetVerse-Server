@@ -64,6 +64,7 @@ async function run() {
     const assetsCollection = db.collection("assets");
     const assignedAssetsCollection = db.collection("assignAssets");
     const employeeAffiliationsCollection = db.collection("affiliatedEmploy");
+    const requestsCollection = db.collection("assetsRequest");
 
     // user create
     app.post("/users", async (req, res) => {
@@ -195,6 +196,42 @@ async function run() {
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
+
+    // All assets for employ
+   app.get("/assigned-assets", verifyUserToken, async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search = "", type = "" } = req.query;
+
+    const pageNumber = parseInt(page);
+    const limitNumber = parseInt(limit);
+    const skip = (pageNumber - 1) * limitNumber;
+
+    const query = {};
+    if (search) query.productName = { $regex: search, $options: "i" };
+    if (type) query.productType = type;
+
+    const totalItems = await assetsCollection.countDocuments(query);
+
+    const items = await assetsCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limitNumber)
+      .toArray();
+
+    res.send({
+      items,
+      totalItems,
+      totalPages: Math.ceil(totalItems / limitNumber),
+      currentPage: pageNumber,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
+
+
 
     // delete assets hr
     app.delete("/assets/:id", verifyUserToken, async (req, res) => {
@@ -431,6 +468,100 @@ async function run() {
         }
       }
     );
+
+    //post employ to asset request
+    app.post("/requests", verifyUserToken, async (req, res) => {
+      try {
+        const {
+          assetId,
+          assetName,
+          assetType,
+          requesterName,
+          requesterEmail,
+          hrEmail,
+          companyName,
+          note,
+        } = req.body;
+
+        if (!assetId || !requesterEmail || !hrEmail) {
+          return res.status(400).send({ message: "Required fields missing" });
+        }
+
+        const requestDoc = {
+          assetId: new ObjectId(assetId),
+          assetName,
+          assetType,
+          requesterName,
+          requesterEmail,
+          hrEmail,
+          companyName,
+          requestDate: new Date(),
+          approvalDate: null,
+          requestStatus: "pending",
+          note: note || "",
+          processedBy: null,
+        };
+
+        const result = await requestsCollection.insertOne(requestDoc);
+
+        res
+          .status(201)
+          .send({ message: "Request submitted", requestId: result.insertedId });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Request failed" });
+      }
+    });
+
+    // approved employ request to hr
+    app.patch("/requests/:id", verifyUserToken, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { action, hrEmail } = req.body; // action = "approved" | "rejected"
+
+        const request = await requestsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!request)
+          return res.status(404).send({ message: "Request not found" });
+
+        if (request.requestStatus !== "pending") {
+          return res.status(400).send({ message: "Request already processed" });
+        }
+
+        let updateData = {
+          requestStatus: action,
+          approvalDate: new Date(),
+          processedBy: hrEmail,
+        };
+
+        await requestsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+
+        if (action === "approved") {
+          await assignedAssetsCollection.insertOne({
+            assetId: request.assetId,
+            assetName: request.assetName,
+            assetType: request.assetType,
+            employeeEmail: request.requesterEmail,
+            employeeName: request.requesterName,
+            hrEmail: request.hrEmail,
+            companyName: request.companyName,
+            assignmentDate: new Date(),
+            returnDate: null,
+            status: "assigned",
+          });
+        }
+
+        res.send({ message: `Request ${action}` });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Update failed" });
+      }
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
