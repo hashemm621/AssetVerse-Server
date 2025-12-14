@@ -218,6 +218,34 @@ async function run() {
       }
     });
 
+    // update assets to hr
+    app.patch("/assets/:id", verifyUserToken, async (req, res) => {
+
+      const { id } = req.params;
+    const updatedData = req.body;
+
+     if (!ObjectId.isValid(id)) {
+    return res.status(400).send({ message: "Invalid asset ID" });
+  }
+
+  try {
+    
+    const result = await assetsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ message: "Asset not found" });
+    }
+
+    res.send({ message: "Asset updated successfully" });
+  } catch (error) {
+    console.error("Update asset error:", error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
