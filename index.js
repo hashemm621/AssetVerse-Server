@@ -58,9 +58,12 @@ const client = new MongoClient(uri, {
 async function run() {
   try {
     await client.connect();
+
     const db = client.db("assetVerse_DB");
     const usersCollection = db.collection("users");
     const assetsCollection = db.collection("assets");
+    const assignedAssetsCollection = db.collection("assignAssets");
+    const employeeAffiliationsCollection = db.collection("affiliatedEmploy");
 
     // user create
     app.post("/users", async (req, res) => {
@@ -220,31 +223,214 @@ async function run() {
 
     // update assets to hr
     app.patch("/assets/:id", verifyUserToken, async (req, res) => {
-
       const { id } = req.params;
-    const updatedData = req.body;
+      const updatedData = req.body;
 
-     if (!ObjectId.isValid(id)) {
-    return res.status(400).send({ message: "Invalid asset ID" });
-  }
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid asset ID" });
+      }
 
-  try {
-    
-    const result = await assetsCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: updatedData }
+      try {
+        const result = await assetsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedData }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: "Asset not found" });
+        }
+
+        res.send({ message: "Asset updated successfully" });
+      } catch (error) {
+        console.error("Update asset error:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    const isAffiliatedEmployee = async (hrEmail, employeeEmail) => {
+      return await employeeAffiliationsCollection.findOne({
+        hrEmail,
+        employeeEmail,
+        status: "active",
+      });
+    };
+
+    // assign employ from hr
+    app.patch("/assets/assign/:id", verifyUserToken, async (req, res) => {
+      try {
+        const { employeeEmail, employeeName } = req.body;
+        const hrEmail = req.user.email;
+        const assetId = req.params.id;
+
+        if (!employeeEmail || !employeeName) {
+          return res.status(400).send({ message: "Employee info required" });
+        }
+
+        const affiliated = await isAffiliatedEmployee(hrEmail, employeeEmail);
+        if (!affiliated) {
+          return res.status(403).send({ message: "Employee not affiliated" });
+        }
+
+        const asset = await assetsCollection.findOne({
+          _id: new ObjectId(assetId),
+          hrEmail,
+        });
+
+        if (!asset || asset.availableQuantity < 1) {
+          return res.status(400).send({ message: "Asset unavailable" });
+        }
+
+        await assetsCollection.updateOne(
+          { _id: asset._id },
+          { $inc: { availableQuantity: -1 } }
+        );
+
+        await assignedAssetsCollection.insertOne({
+          assetId: asset._id,
+          assetName: asset.productName,
+          assetImage: asset.productImage,
+          assetType: asset.productType,
+          employeeEmail,
+          employeeName,
+          hrEmail,
+          companyName: asset.companyName,
+          assignmentDate: new Date(),
+          returnDate: null,
+          status: "assigned",
+        });
+
+        res.send({ message: "Asset assigned successfully" });
+      } catch (error) {
+        res.status(500).send({ message: "Assign failed" });
+      }
+    });
+
+    // assets return
+    app.patch("/assets/return/:id", verifyUserToken, async (req, res) => {
+      try {
+        const assignmentId = req.params.id;
+
+        const assignment = await assignedAssetsCollection.findOne({
+          _id: new ObjectId(assignmentId),
+        });
+
+        if (!assignment) {
+          return res.status(404).send({ message: "Assignment not found" });
+        }
+
+        if (assignment.status === "returned") {
+          return res.status(400).send({ message: "Asset already returned" });
+        }
+
+        if (assignment.assetType === "non-returnable") {
+          return res.status(403).send({
+            message: "Non-returnable assets cannot be returned",
+          });
+        }
+
+        await assignedAssetsCollection.updateOne(
+          { _id: assignment._id },
+          {
+            $set: {
+              status: "returned",
+              returnDate: new Date(),
+            },
+          }
+        );
+
+        await assetsCollection.updateOne(
+          { _id: assignment.assetId },
+          { $inc: { availableQuantity: 1 } }
+        );
+
+        res.send({ message: "Asset returned successfully" });
+      } catch (error) {
+        console.error("Return asset error:", error);
+        res.status(500).send({ message: "Return failed" });
+      }
+    });
+
+    // post employ affiliation
+    app.post("/affiliations", verifyUserToken, async (req, res) => {
+      try {
+        const { employeeEmail, employeeName, companyName, companyLogo } =
+          req.body;
+
+        const hrEmail = req.user.email;
+
+        if (!employeeEmail || !employeeName) {
+          return res.status(400).send({ message: "Employee info required" });
+        }
+
+        // prevent duplicate affiliation
+        const exists = await employeeAffiliationsCollection.findOne({
+          employeeEmail,
+          hrEmail,
+          status: "active",
+        });
+
+        if (exists) {
+          return res
+            .status(409)
+            .send({ message: "Employee already affiliated" });
+        }
+
+        const affiliationDoc = {
+          employeeEmail,
+          employeeName,
+          hrEmail,
+          companyName,
+          companyLogo,
+          affiliationDate: new Date(),
+          status: "active",
+        };
+
+        await employeeAffiliationsCollection.insertOne(affiliationDoc);
+
+        res.send({ message: "Employee affiliated successfully" });
+      } catch (error) {
+        res.status(500).send({ message: "Affiliation failed" });
+      }
+    });
+
+    // hr myEmployees
+    app.get("/affiliations/hr", verifyUserToken, async (req, res) => {
+      try {
+        const hrEmail = req.decoded_email; // use the verified email from token
+        const employees = await employeeAffiliationsCollection
+          .find({ hrEmail, status: "active" })
+          .toArray();
+        res.send(employees);
+      } catch (error) {
+        console.error("Error fetching affiliated employees:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // remove employ from company
+    app.patch(
+      "/affiliations/remove/:employeeEmail",
+      verifyUserToken,
+      async (req, res) => {
+        try {
+          const hrEmail = req.user.email;
+          const { employeeEmail } = req.params;
+
+          const result = await employeeAffiliationsCollection.updateOne(
+            { hrEmail, employeeEmail, status: "active" },
+            { $set: { status: "inactive" } }
+          );
+
+          if (!result.modifiedCount) {
+            return res.status(404).send({ message: "Employee not found" });
+          }
+
+          res.send({ message: "Employee removed from team" });
+        } catch (error) {
+          res.status(500).send({ message: "Remove failed" });
+        }
+      }
     );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).send({ message: "Asset not found" });
-    }
-
-    res.send({ message: "Asset updated successfully" });
-  } catch (error) {
-    console.error("Update asset error:", error);
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
