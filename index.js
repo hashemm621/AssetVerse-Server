@@ -294,7 +294,7 @@ async function run() {
     app.patch("/assets/assign/:id", verifyUserToken, async (req, res) => {
       try {
         const { employeeEmail, employeeName } = req.body;
-        const hrEmail = req.user.email;
+        const hrEmail = req.decoded_email;
         const assetId = req.params.id;
 
         if (!employeeEmail || !employeeName) {
@@ -391,7 +391,7 @@ async function run() {
         const { employeeEmail, employeeName, companyName, companyLogo } =
           req.body;
 
-        const hrEmail = req.user.email;
+        const hrEmail = req.decoded_email;
 
         if (!employeeEmail || !employeeName) {
           return res.status(400).send({ message: "Employee info required" });
@@ -433,18 +433,42 @@ async function run() {
     });
 
     // hr myEmployees
-    app.get("/affiliations/hr", verifyUserToken, async (req, res) => {
-      try {
-        const hrEmail = req.decoded_email;
-        const employees = await employeeAffiliationsCollection
-          .find({ hrEmail, status: "active" })
-          .toArray();
-        res.send(employees);
-      } catch (error) {
-        console.error("Error fetching affiliated employees:", error);
-        res.status(500).send({ message: "Internal Server Error" });
-      }
-    });
+   app.get("/affiliations/hr", verifyUserToken, async (req, res) => {
+  try {
+    const hrEmail = req.decoded_email;
+
+    const employees = await employeeAffiliationsCollection
+      .find({ hrEmail, status: "active" })
+      .toArray();
+
+    const employeesWithDetails = await Promise.all(
+      employees.map(async (emp) => {
+        const user = await usersCollection.findOne({
+          email: emp.employeeEmail,
+        });
+
+        const assetsCount = await assignedAssetsCollection.countDocuments({
+          employeeEmail: emp.employeeEmail,
+          hrEmail,
+          status: "assigned",
+        });
+
+        return {
+          ...emp,
+          photo: user?.photo || user?.photoURL || "",
+          joinDate: emp.affiliationDate,
+          assetsCount,
+        };
+      })
+    );
+
+    res.send(employeesWithDetails);
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
+
 
     // remove employ from company
     app.patch(
@@ -452,7 +476,7 @@ async function run() {
       verifyUserToken,
       async (req, res) => {
         try {
-          const hrEmail = req.user.email;
+          const hrEmail = req.decoded_email;
           const { employeeEmail } = req.params;
 
           const result = await employeeAffiliationsCollection.updateOne(
@@ -559,6 +583,8 @@ async function run() {
           { $set: updateData }
         );
 
+       
+
         if (action === "approved") {
           // 1. Add to assignedAssets
           await assignedAssetsCollection.insertOne({
@@ -583,8 +609,9 @@ async function run() {
           // 3. Create affiliation if first time
           const existingAffiliation =
             await employeeAffiliationsCollection.findOne({
-              hrEmail: request.hrEmail,
-              employeeEmail: request.requesterEmail,
+              hrEmail: request?.hrEmail,
+              employeeEmail: request?.requesterEmail,
+
               status: "active",
             });
 
@@ -594,6 +621,7 @@ async function run() {
               employeeEmail: request.requesterEmail,
               employeeName: request.requesterName,
               companyName: request.companyName,
+              
               affiliationDate: new Date(),
               status: "active",
             });
