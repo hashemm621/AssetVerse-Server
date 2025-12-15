@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const stripe = require('stripe')(process.env.STRIPE_SECRET);
 require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
@@ -68,7 +69,7 @@ async function run() {
     const packagesCollection = db.collection("packages");
     const paymentsCollection = db.collection("payments");
 
-    
+
     // user create
     app.post("/users", async (req, res) => {
       try {
@@ -695,6 +696,80 @@ async function run() {
         res.status(500).send({ message: "Update failed" });
       }
     });
+
+    // packages collection get api
+    app.get("/packages", verifyUserToken, async (req, res) => {
+  const packages = await packagesCollection.find().toArray();
+  res.send(packages);
+});
+
+//payments
+app.post("/create-payment-intent", verifyUserToken, async (req, res) => {
+  const { price } = req.body;
+
+  const paymentIntent = await stripe.paymentIntents.create({
+    amount: price * 100, // cents
+    currency: "usd",
+    payment_method_types: ["card"],
+  });
+
+  res.send({
+    clientSecret: paymentIntent.client_secret,
+  });
+});
+
+app.post("/payments", verifyUserToken, async (req, res) => {
+  const {
+    packageName,
+    employeeLimit,
+    amount,
+    transactionId,
+  } = req.body;
+
+  const hrEmail = req.decoded_email;
+
+  // 1️⃣ Save payment history
+  await paymentsCollection.insertOne({
+    hrEmail,
+    packageName,
+    employeeLimit,
+    amount,
+    transactionId,
+    paymentDate: new Date(),
+    status: "completed",
+  });
+
+  // 2️⃣ Update HR package
+  await usersCollection.updateOne(
+    { email: hrEmail },
+    {
+      $set: {
+        package: {
+          name: packageName,
+          employeesLimit: employeeLimit,
+          price: amount,
+          activatedAt: new Date(),
+        },
+      },
+    }
+  );
+
+  res.send({ success: true });
+});
+
+app.get("/payments/history", verifyUserToken, async (req, res) => {
+  const hrEmail = req.decoded_email;
+
+  const history = await paymentsCollection
+    .find({ hrEmail })
+    .sort({ paymentDate: -1 })
+    .toArray();
+
+  res.send(history);
+});
+
+
+
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
