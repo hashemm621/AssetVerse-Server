@@ -1,7 +1,8 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const stripe = require('stripe')(process.env.STRIPE_SECRET);
-require("dotenv").config();
+
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const app = express();
 const port = process.env.Port || 3000;
@@ -46,6 +47,16 @@ const verifyUserToken = async (req, res, next) => {
   }
 };
 
+function generateTrackingId() {
+  return (
+    "AV-" +
+    Date.now().toString(36).toUpperCase() +
+    "-" +
+    Math.random().toString(36).substring(2, 8).toUpperCase()
+  );
+}
+
+
 const uri = process.env.URI;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -68,6 +79,10 @@ async function run() {
     const requestsCollection = db.collection("assetsRequest");
     const packagesCollection = db.collection("packages");
     const paymentsCollection = db.collection("payments");
+
+
+
+
 
 
     // user create
@@ -646,6 +661,25 @@ async function run() {
           { _id: new ObjectId(id) },
           { $set: updateData }
         );
+        
+
+
+        if (action === "approved") {
+
+  const hrUser = await usersCollection.findOne({ email: hrEmail });
+  const employeeCount = await employeeAffiliationsCollection.countDocuments({
+    hrEmail,
+    status: "active",
+  });
+
+  if (employeeCount >= hrUser.package.employeesLimit) {
+    return res.status(403).send({
+      message: "Employee limit exceeded. Upgrade package first.",
+    });
+  }
+
+  
+}
 
         if (action === "approved") {
           // 1. Add to assignedAssets
@@ -704,18 +738,30 @@ async function run() {
 });
 
 //payments
-app.post("/create-payment-intent", verifyUserToken, async (req, res) => {
-  const { price } = req.body;
+app.post("/create-checkout-session", verifyUserToken, async (req, res) => {
+  const { packageName, price, employeeLimit } = req.body;
 
-  const paymentIntent = await stripe.paymentIntents.create({
-    amount: price * 100, // cents
-    currency: "usd",
+  const trackingId = generateTrackingId();
+  const session = await stripe.checkout.sessions.create({
     payment_method_types: ["card"],
+    line_items: [
+      {
+        price_data: {
+          currency: "usd",
+          product_data: {
+            name: packageName,
+          },
+          unit_amount: price * 100,
+        },
+        quantity: 1,
+      },
+    ],
+    mode: "payment",
+    success_url: `${process.env.CLIENT_DOMAIN}/dashboard/payment-success?pkg=${packageName}&limit=${employeeLimit}&price=${price}&trackingId=${trackingId}`,
+    cancel_url: `${process.env.CLIENT_DOMAIN}/packages`,
   });
 
-  res.send({
-    clientSecret: paymentIntent.client_secret,
-  });
+  res.send({ url: session.url });
 });
 
 app.post("/payments", verifyUserToken, async (req, res) => {
@@ -723,23 +769,45 @@ app.post("/payments", verifyUserToken, async (req, res) => {
     packageName,
     employeeLimit,
     amount,
-    transactionId,
+    trackingId
+    
   } = req.body;
+
+
+  if (!trackingId) {
+  return res.status(400).send({
+    message: "trackingId is required",
+  });
+}
+
 
   const hrEmail = req.decoded_email;
 
-  // 1️⃣ Save payment history
+    const existingPayment = await paymentsCollection.findOne({ trackingId });
+
+  if (existingPayment) {
+    return res.send({
+      success: true,
+      trackingId: existingPayment.trackingId,
+      message: "Payment already recorded",
+    });
+  }
+
+
+
+  // Save payment history
   await paymentsCollection.insertOne({
     hrEmail,
     packageName,
     employeeLimit,
     amount,
-    transactionId,
+    trackingId,
+    transactionId: trackingId,
     paymentDate: new Date(),
     status: "completed",
   });
 
-  // 2️⃣ Update HR package
+  //  Update HR package
   await usersCollection.updateOne(
     { email: hrEmail },
     {
@@ -754,7 +822,7 @@ app.post("/payments", verifyUserToken, async (req, res) => {
     }
   );
 
-  res.send({ success: true });
+  res.send({ success: true,trackingId });
 });
 
 app.get("/payments/history", verifyUserToken, async (req, res) => {
@@ -767,6 +835,45 @@ app.get("/payments/history", verifyUserToken, async (req, res) => {
 
   res.send(history);
 });
+
+
+app.post("/downgrade-to-free", verifyUserToken, async (req, res) => {
+  const hrEmail = req.decoded_email;
+
+  const freePackage = {
+    name: "Default Free Package",
+    employeesLimit: 5,
+    price: 0,
+    activatedAt: new Date(),
+  };
+
+  // Update HR package
+  await usersCollection.updateOne(
+    { email: hrEmail },
+    { $set: { package: freePackage } }
+  );
+
+  // Fetch active employees
+  const activeEmployees = await employeeAffiliationsCollection
+    .find({ hrEmail, status: "active" })
+    .sort({ affiliationDate: 1 })
+    .toArray();
+
+  // Keep only first 5 active
+  const limit = freePackage.employeesLimit;
+  if (activeEmployees.length > limit) {
+    const toDeactivate = activeEmployees.slice(limit);
+    for (const emp of toDeactivate) {
+      await employeeAffiliationsCollection.updateOne(
+        { _id: emp._id },
+        { $set: { status: "inactive" } }
+      );
+    }
+  }
+
+  res.send({ success: true, message: "Switched to Free Package" });
+});
+
 
 
 
