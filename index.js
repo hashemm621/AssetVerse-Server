@@ -19,14 +19,35 @@ admin.initializeApp({
 
 // middle ware
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-app.use(
-  cors({
-    origin: [process.env.CLIENT_DOMAIN],
-    credentials: true,
-    optionsSuccessStatus: 200,
-  })
-);
+
+app.use(cors({
+  origin:["http://localhost:5173","https://profound-dragon-cef170.netlify.app"]
+}))
+
+// app.use(
+//   cors({
+//     origin: (origin, callback) => {
+//       const allowedOrigins = [
+//         process.env.CLIENT_DOMAIN,
+//         "http://localhost:5173",
+        
+//       ];
+
+//       if (!origin || allowedOrigins.includes(origin)) {
+//         callback(null, true);
+//       } else {
+//         callback(new Error("Not allowed by CORS"));
+//       }
+//     },
+//     credentials: true,
+//     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+//     allowedHeaders: ["Content-Type", "Authorization"],
+//   })
+// );
+
+
+
+
 
 // verifyUserToken
 const verifyUserToken = async (req, res, next) => {
