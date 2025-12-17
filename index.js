@@ -10,8 +10,9 @@ const port = process.env.Port || 3000;
 // service account
 const admin = require("firebase-admin");
 
-const serviceAccount = require(process.env.ASSETVERSE_SERVICE_KEY);
-
+const serviceAccount = JSON.parse(
+  Buffer.from(process.env.ASSETVERSE_SERVICE_KEY_BASE64, "base64").toString("utf-8")
+);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
@@ -69,7 +70,7 @@ const client = new MongoClient(uri, {
 });
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
 
     const db = client.db("assetVerse_DB");
     const usersCollection = db.collection("users");
@@ -879,7 +880,7 @@ app.post("/downgrade-to-free", verifyUserToken, async (req, res) => {
 
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
     );
@@ -895,3 +896,5 @@ app.get("/", (req, res) => {
 app.listen(port, () => {
   console.log(`assetVerse app is listening on port ${port}`);
 });
+
+
